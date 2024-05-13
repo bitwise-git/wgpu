@@ -31,13 +31,17 @@ mod conv;
 mod device;
 mod instance;
 
-use std::{borrow::Borrow, collections::HashSet, ffi::CStr, fmt, mem, num::NonZeroU32, sync::Arc};
+use std::{
+    borrow::Borrow,
+    collections::HashSet,
+    ffi::{CStr, CString},
+    fmt, mem,
+    num::NonZeroU32,
+    sync::Arc,
+};
 
 use arrayvec::ArrayVec;
-use ash::{
-    extensions::{ext, khr},
-    vk,
-};
+use ash::{ext, khr, vk};
 use parking_lot::{Mutex, RwLock};
 
 const MILLIS_TO_NANOS: u64 = 1_000_000;
@@ -74,7 +78,7 @@ impl crate::Api for Api {
 }
 
 struct DebugUtils {
-    extension: ext::DebugUtils,
+    extension: ext::debug_utils::Instance,
     messenger: vk::DebugUtilsMessengerEXT,
 
     /// Owning pointer to the debug messenger callback user data.
@@ -97,7 +101,7 @@ pub struct DebugUtilsCreateInfo {
 /// DebugUtilsMessenger for their workarounds
 struct ValidationLayerProperties {
     /// Validation layer description, from `vk::LayerProperties`.
-    layer_description: std::ffi::CString,
+    layer_description: CString,
 
     /// Validation layer specification version, from `vk::LayerProperties`.
     layer_spec_version: u32,
@@ -123,7 +127,7 @@ pub struct InstanceShared {
     drop_guard: Option<crate::DropGuard>,
     flags: wgt::InstanceFlags,
     debug_utils: Option<DebugUtils>,
-    get_physical_device_properties: Option<khr::GetPhysicalDeviceProperties2>,
+    get_physical_device_properties: Option<khr::get_physical_device_properties2::Instance>,
     entry: ash::Entry,
     has_nv_optimus: bool,
     android_sdk_version: u32,
@@ -162,7 +166,7 @@ struct SwapchainSemaphores {
 impl SwapchainSemaphores {
     fn new(device: &ash::Device) -> Result<Self, crate::DeviceError> {
         let acquire =
-            unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::builder(), None)? };
+            unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)? };
 
         Ok(Self {
             acquire,
@@ -203,7 +207,7 @@ impl SwapchainSemaphores {
             Some(sem) => *sem,
             None => {
                 let sem =
-                    unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::builder(), None)? };
+                    unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::default(), None)? };
                 self.present.push(sem);
                 sem
             }
@@ -240,7 +244,7 @@ impl SwapchainSemaphores {
 struct Swapchain {
     raw: vk::SwapchainKHR,
     raw_flags: vk::SwapchainCreateFlagsKHR,
-    functor: khr::Swapchain,
+    functor: khr::swapchain::Device,
     device: Arc<DeviceShared>,
     images: Vec<vk::Image>,
     config: crate::SurfaceConfiguration,
@@ -270,7 +274,7 @@ impl Swapchain {
 
 pub struct Surface {
     raw: vk::SurfaceKHR,
-    functor: khr::Surface,
+    functor: khr::surface::Instance,
     instance: Arc<InstanceShared>,
     swapchain: RwLock<Option<Swapchain>>,
 }
@@ -309,14 +313,15 @@ enum ExtensionFn<T> {
 }
 
 struct DeviceExtensionFunctions {
-    draw_indirect_count: Option<khr::DrawIndirectCount>,
-    timeline_semaphore: Option<ExtensionFn<khr::TimelineSemaphore>>,
+    debug_utils: Option<ext::debug_utils::Device>,
+    draw_indirect_count: Option<khr::draw_indirect_count::Device>,
+    timeline_semaphore: Option<ExtensionFn<khr::timeline_semaphore::Device>>,
     ray_tracing: Option<RayTracingDeviceExtensionFunctions>,
 }
 
 struct RayTracingDeviceExtensionFunctions {
-    acceleration_structure: khr::AccelerationStructure,
-    buffer_device_address: khr::BufferDeviceAddress,
+    acceleration_structure: khr::acceleration_structure::Device,
+    buffer_device_address: khr::buffer_device_address::Device,
 }
 
 /// Set of internal capabilities, which don't show up in the exposed
@@ -483,12 +488,12 @@ impl RelaySemaphores {
     fn new(device: &ash::Device) -> Result<Self, crate::DeviceError> {
         let wait = unsafe {
             device
-                .create_semaphore(&vk::SemaphoreCreateInfo::builder(), None)
+                .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
                 .map_err(crate::DeviceError::from)?
         };
         let signal = unsafe {
             device
-                .create_semaphore(&vk::SemaphoreCreateInfo::builder(), None)
+                .create_semaphore(&vk::SemaphoreCreateInfo::default(), None)
                 .map_err(crate::DeviceError::from)?
         };
         Ok(Self {
@@ -523,7 +528,7 @@ impl RelaySemaphores {
 
 pub struct Queue {
     raw: vk::Queue,
-    swapchain_fn: khr::Swapchain,
+    swapchain_fn: khr::swapchain::Device,
     device: Arc<DeviceShared>,
     family_index: u32,
     relay_semaphores: Mutex<RelaySemaphores>,
@@ -608,12 +613,9 @@ pub struct BindGroup {
 #[derive(Default)]
 struct Temp {
     marker: Vec<u8>,
-    buffer_barriers: Vec<vk::BufferMemoryBarrier>,
-    image_barriers: Vec<vk::ImageMemoryBarrier>,
+    buffer_barriers: Vec<vk::BufferMemoryBarrier<'static>>,
+    image_barriers: Vec<vk::ImageMemoryBarrier<'static>>,
 }
-
-unsafe impl Send for Temp {}
-unsafe impl Sync for Temp {}
 
 impl Temp {
     fn clear(&mut self) {
@@ -794,7 +796,7 @@ impl Fence {
     fn get_latest(
         &self,
         device: &ash::Device,
-        extension: Option<&ExtensionFn<khr::TimelineSemaphore>>,
+        extension: Option<&ExtensionFn<khr::timeline_semaphore::Device>>,
     ) -> Result<crate::FenceValue, crate::DeviceError> {
         match *self {
             Self::TimelineSemaphore(raw) => unsafe {
@@ -840,9 +842,7 @@ impl Fence {
                 }
                 if free.len() != base_free {
                     active.retain(|&(value, _)| value > latest);
-                    unsafe {
-                        device.reset_fences(&free[base_free..])?;
-                    }
+                    unsafe { device.reset_fences(&free[base_free..]) }?
                 }
                 *last_completed = latest;
             }
@@ -934,7 +934,7 @@ impl crate::Queue for Queue {
                     None => unsafe {
                         self.device
                             .raw
-                            .create_fence(&vk::FenceCreateInfo::builder(), None)?
+                            .create_fence(&vk::FenceCreateInfo::default(), None)?
                     },
                 };
                 active.push((signal_value, fence_raw));
@@ -946,7 +946,7 @@ impl crate::Queue for Queue {
             .map(|cmd| cmd.raw)
             .collect::<Vec<_>>();
 
-        let mut vk_info = vk::SubmitInfo::builder().command_buffers(&vk_cmd_buffers);
+        let mut vk_info = vk::SubmitInfo::default().command_buffers(&vk_cmd_buffers);
 
         vk_info = vk_info
             .wait_semaphores(&wait_semaphores)
@@ -957,7 +957,7 @@ impl crate::Queue for Queue {
 
         if self.device.private_caps.timeline_semaphores {
             vk_timeline_info =
-                vk::TimelineSemaphoreSubmitInfo::builder().signal_semaphore_values(&signal_values);
+                vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&signal_values);
             vk_info = vk_info.push_next(&mut vk_timeline_info);
         }
 
@@ -965,7 +965,7 @@ impl crate::Queue for Queue {
         unsafe {
             self.device
                 .raw
-                .queue_submit(self.raw, &[vk_info.build()], fence_raw)?
+                .queue_submit(self.raw, &[vk_info], fence_raw)?
         };
         Ok(())
     }
@@ -987,7 +987,7 @@ impl crate::Queue for Queue {
 
         let swapchains = [ssc.raw];
         let image_indices = [texture.index];
-        let vk_info = vk::PresentInfoKHR::builder()
+        let vk_info = vk::PresentInfoKHR::default()
             .swapchains(&swapchains)
             .image_indices(&image_indices)
             .wait_semaphores(swapchain_semaphores.get_present_wait_semaphores());
