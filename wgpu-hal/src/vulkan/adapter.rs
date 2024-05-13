@@ -1443,6 +1443,9 @@ impl super::Instance {
                 }),
             image_format_list: phd_capabilities.device_api_version >= vk::API_VERSION_1_2
                 || phd_capabilities.supports_extension(khr::image_format_list::NAME),
+            subgroup_size_control: phd_features
+                .subgroup_size_control
+                .map_or(false, |ext| ext.subgroup_size_control == vk::TRUE),
         };
         let capabilities = crate::Capabilities {
             limits: phd_capabilities.to_wgpu_limits(),

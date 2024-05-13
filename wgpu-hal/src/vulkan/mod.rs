@@ -347,6 +347,7 @@ struct PrivateCapabilities {
     robust_image_access2: bool,
     zero_initialize_workgroup_memory: bool,
     image_format_list: bool,
+    subgroup_size_control: bool,
 }
 
 bitflags::bitflags!(
@@ -924,6 +925,7 @@ impl crate::Queue for Queue {
                 signal_semaphores.push(raw);
                 signal_values.push(signal_value);
             }
+
             Fence::FencePool {
                 ref mut active,
                 ref mut free,
